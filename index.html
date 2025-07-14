@@ -43,7 +43,7 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background-color: rgba(255, 255, 255, 0.8);
+            background-color: rgba(249, 250, 251, 0.9);
             z-index: 9999;
             display: flex;
             justify-content: center;
@@ -56,7 +56,7 @@
             width: 36px;
             height: 36px;
             border-radius: 50%;
-            border-left-color: #09f;
+            border-left-color: #3b82f6;
             animation: spin 1s ease infinite;
         }
         @keyframes spin {
@@ -69,8 +69,10 @@
 
     <!-- 読み込み中オーバーレイ -->
     <div id="loading-overlay">
-        <div class="spinner"></div>
-        <p class="mt-4 text-gray-600">チェックリストを同期中...</p>
+        <div id="loading-content">
+            <div class="spinner mx-auto"></div>
+            <p class="mt-4 text-gray-600">チェックリストを同期中...</p>
+        </div>
     </div>
 
     <div class="container mx-auto max-w-2xl p-4">
@@ -171,7 +173,7 @@
                             <p class="text-yellow-500 font-bold">おすすめ度: ★★★★★</p>
                             <p class="text-sm mt-2"><strong class="text-blue-600">メリット:</strong> 節約、時短、好きなものを食べられる。</p>
                             <p class="text-sm"><strong class="text-red-600">デメリット:</strong> 荷物が増える、朝の準備が大変。</p>
-                            <p class="text-sm mt-2 bg-green-100 p-2 rounded-md">📝 ドン・ブラーシートがあるので一番快適！</p>
+                            <p class="text-sm mt-2 bg-green-100 p-2 rounded-md">� ドン・ブラーシートがあるので一番快適！</p>
                         </div>
                         <div class="border border-orange-200 bg-orange-50 rounded-lg p-4">
                             <h3 class="font-bold text-lg text-orange-800">作戦B：マクドナルドで買う</h3>
@@ -241,33 +243,62 @@
     <script type="module">
         // Firebase モジュールのインポート
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, enableNetwork, disableNetwork } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
         // --- Firebase 設定 ---
-        // この環境で提供されるFirebase設定と認証情報を使用します
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-hirapark-checklist';
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
-        // --- アプリケーションの初期化 ---
-        let db, auth;
-        try {
-            const app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-        } catch (e) {
-            console.error("Firebase initialization failed:", e);
-            document.getElementById('loading-overlay').innerHTML = "<p>Error: Failed to connect to database.</p>";
-            return;
-        }
-
         // --- DOM要素 ---
         const checkboxes = document.querySelectorAll('.custom-checkbox');
         const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingContent = document.getElementById('loading-content');
 
+        // --- ヘルパー関数 ---
+        function handleLoadingError(message) {
+            loadingContent.innerHTML = `<p class="text-red-600 font-bold p-4 text-center">${message}</p>`;
+        }
+
+        function hideLoadingOverlay() {
+            loadingOverlay.style.opacity = '0';
+            setTimeout(() => {
+                loadingOverlay.style.display = 'none';
+            }, 300);
+        }
+
+        function updateCheckboxesUI(items) {
+            checkboxes.forEach(checkbox => {
+                if (items[checkbox.id] !== undefined) {
+                    checkbox.checked = items[checkbox.id];
+                }
+            });
+        }
+        
         // --- メイン処理 ---
         async function main() {
+            // 接続タイムアウト処理
+            const loadingTimeout = setTimeout(() => {
+                handleLoadingError("接続がタイムアウトしました。<br>ページを再読み込みしてください。");
+            }, 15000); // 15秒
+
+            // --- アプリケーションの初期化 ---
+            let db, auth;
+            try {
+                if (!firebaseConfig || !firebaseConfig.apiKey) {
+                    throw new Error("Firebaseの接続設定が不完全です。");
+                }
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+            } catch (e) {
+                console.error("Firebase initialization failed:", e);
+                clearTimeout(loadingTimeout);
+                handleLoadingError(`データベースの初期化に失敗しました: ${e.message}`);
+                return;
+            }
+
             try {
                 // 認証
                 if (initialAuthToken) {
@@ -276,9 +307,8 @@
                     await signInAnonymously(auth);
                 }
                 
-                const userId = auth.currentUser?.uid;
-                if (!userId) {
-                    throw new Error("Authentication failed.");
+                if (!auth.currentUser) {
+                    throw new Error("認証に失敗しました。");
                 }
 
                 // Firestoreのドキュメント参照を作成
@@ -286,12 +316,18 @@
 
                 // リアルタイムリスナーを設定
                 const unsubscribe = onSnapshot(checklistDocRef, (doc) => {
+                    clearTimeout(loadingTimeout); // 接続成功
                     const data = doc.data() || {};
                     updateCheckboxesUI(data.items || {});
-                    // 初回読み込み後にローディング画面を非表示
-                    if (loadingOverlay.style.opacity !== "0") {
+                    if (loadingOverlay.style.display !== 'none') {
                        hideLoadingOverlay();
                     }
+                }, (error) => {
+                    // onSnapshot自体からのエラー
+                    clearTimeout(loadingTimeout);
+                    console.error("Firestore listener error:", error);
+                    handleLoadingError(`データの同期に失敗しました: ${error.message}`);
+                    disableNetwork(db); // エラー時はネットワークを切断
                 });
 
                 // チェックボックスの変更をリッスン
@@ -299,39 +335,24 @@
                     checkbox.addEventListener('change', async (e) => {
                         const id = e.target.id;
                         const isChecked = e.target.checked;
-                        await updateChecklistInFirestore(checklistDocRef, id, isChecked);
+                        try {
+                           await enableNetwork(db); // ネットワーク再接続試行
+                           const updateData = { [`items.${id}`]: isChecked };
+                           await setDoc(checklistDocRef, updateData, { merge: true });
+                        } catch (error) {
+                            console.error("Failed to update checklist:", error);
+                            handleLoadingError("更新に失敗しました。接続を確認してください。");
+                            // UIを元に戻す
+                            e.target.checked = !isChecked;
+                        }
                     });
                 });
 
             } catch (error) {
+                clearTimeout(loadingTimeout);
                 console.error("Error in main function:", error);
-                loadingOverlay.innerHTML = `<p class="text-red-500 p-4">エラーが発生しました: ${error.message}</p>`;
+                handleLoadingError(`エラーが発生しました: ${error.message}`);
             }
-        }
-
-        // --- ヘルパー関数 ---
-
-        // UIのチェックボックスを更新
-        function updateCheckboxesUI(items) {
-            checkboxes.forEach(checkbox => {
-                if (items[checkbox.id] !== undefined) {
-                    checkbox.checked = items[checkbox.id];
-                }
-            });
-        }
-
-        // Firestoreのデータを更新
-        async function updateChecklistInFirestore(docRef, itemId, isChecked) {
-            const updateData = { [`items.${itemId}`]: isChecked };
-            await setDoc(docRef, updateData, { merge: true });
-        }
-        
-        // ローディング画面を非表示にする
-        function hideLoadingOverlay() {
-            loadingOverlay.style.opacity = '0';
-            setTimeout(() => {
-                loadingOverlay.style.display = 'none';
-            }, 300); // アニメーションが終わってから非表示
         }
         
         // --- 実行 ---
